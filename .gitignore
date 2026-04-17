@@ -1,0 +1,33 @@
+# Binaries
+/bot
+/vo2-bot
+
+# Go build artifacts
+*.test
+*.out
+vendor/
+
+# Environment
+.env
+.envrc
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/terraform.tfvars
+infra/.terraform.tfstate.lock.info
+infra/crash.log
+infra/crash.*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local planning
+PLAN.md
