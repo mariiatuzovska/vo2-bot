@@ -62,6 +62,53 @@ ON CONFLICT (metric_name, measured_at, source) DO UPDATE SET
     qty   = EXCLUDED.qty,
     units = EXCLUDED.units;
 
+-- NULL or empty arrays disable the corresponding filter.
+-- cardinality(NULL) returns NULL in PG, so we wrap with COALESCE.
+
+-- name: ListWorkouts :many
+SELECT id, name, source, is_indoor, location,
+       started_at, ended_at, duration_seconds,
+       distance_km, active_energy_kj,
+       avg_hr_bpm, max_hr_bpm, min_hr_bpm,
+       elevation_up_m, avg_speed, speed_units,
+       step_cadence, humidity_pct,
+       temperature, temperature_units,
+       intensity, payload, created_at
+  FROM apple_workouts
+ WHERE started_at >= @from_at
+   AND started_at <  @to_at
+   AND (COALESCE(cardinality(@names::text[]), 0) = 0 OR name = ANY(@names::text[]))
+ ORDER BY started_at DESC
+ LIMIT @lim;
+
+-- name: ListWorkoutHeartRate :many
+SELECT workout_id, measured_at, min_bpm, max_bpm, avg_bpm
+  FROM apple_workout_heart_rate
+ WHERE workout_id = ANY(@workout_ids::uuid[])
+ ORDER BY workout_id, measured_at;
+
+-- name: ListWorkoutRoute :many
+SELECT id, workout_id, recorded_at, latitude, longitude,
+       altitude_m, speed, horizontal_accuracy, course_accuracy
+  FROM apple_workout_route
+ WHERE workout_id = ANY(@workout_ids::uuid[])
+ ORDER BY workout_id, recorded_at;
+
+-- name: ListDailyMetrics :many
+SELECT metric_name, measured_at, source, qty, units
+  FROM apple_daily_metrics
+ WHERE measured_at >= @from_at
+   AND measured_at <  @to_at
+   AND (COALESCE(cardinality(@names::text[]),   0) = 0 OR metric_name = ANY(@names::text[]))
+   AND (COALESCE(cardinality(@sources::text[]), 0) = 0 OR source      = ANY(@sources::text[]))
+ ORDER BY metric_name, measured_at;
+
+-- name: ListWorkoutNames :many
+SELECT DISTINCT name FROM apple_workouts ORDER BY name;
+
+-- name: ListMetricNames :many
+SELECT DISTINCT metric_name FROM apple_daily_metrics ORDER BY metric_name;
+
 -- ============================================================
 -- Strava
 -- ============================================================
