@@ -16,7 +16,7 @@ This repo is a work in progress.
 | DB access   | `sqlc` (generated) for CRUD, hand-written `pgx.CopyFrom` for bulk inserts |
 | Local infra | Terraform with `kreuzwerker/docker` provider           |
 | Dev loop    | Tilt                                                   |
-| Strava      | planned (`golang.org/x/oauth2` + `net/http`)           |
+| Strava      | `net/http` — OAuth2 + activity sync (`internal/strava`) |
 | Telegram    | planned (`go-telegram-bot-api/telegram-bot-api/v5`)    |
 | Claude      | planned (`anthropic-sdk-go`, model `claude-opus-4-7`)  |
 
@@ -27,8 +27,10 @@ vo2-bot/
   cmd/bot/main.go            entrypoint: config → migrate → open pool → wait
   embed.go                   embeds db/migrations/*.sql into the binary
   db/                        ALL SQL lives here:
-    migrations/              golang-migrate up/down files
-    queries.sql              hand-written sqlc queries
+    migrations/
+      0001_apple.up.sql      Apple Health tables (workouts, HR bins, route, metrics, imports)
+      0002_strava.up.sql     Strava tables (athletes, tokens, links, activities, sync, rate limit)
+    queries.sql              hand-written sqlc queries (Apple + Strava)
     sqlc.yaml                sqlc codegen config
   internal/
     config/                  viper-based env loader
@@ -38,10 +40,15 @@ vo2-bot/
       queries/               GENERATED sqlc code (package: queries)
     apple/                   Apple Health ingest: parse HAE archive,
                              orchestrate store calls, HTTP handler.
-                             Imports internal/store/queries directly.
+    strava/                  Strava OAuth2 + activity collector:
+      client.go              Client struct, do() with lazy token refresh + rate-limit tracking
+      oauth.go               AuthURL(), HandleCallback() — OAuth2 flow
+      athlete.go             GetAthlete(), fetchAthleteWithToken(), athleteParams()
+      activities.go          apiActivity struct, listPage() — paginated activity fetch
+      sync.go                Sync() — advisory lock, pagination loop, cursor update
     httpx/                   shared HTTP helpers (Handle wrapper, WriteJSON)
     errs/                    typed HTTP errors (NewBadRequest, NewNotFound, …)
-    strava/  telegram/  claude/   package stubs
+    telegram/  claude/       package stubs
   build/Dockerfile           production image (not used in dev loop)
   infra/                     Terraform: Postgres container, network, volume
   Tiltfile                   orchestrates init → tf-up → postgres → bot
@@ -74,7 +81,11 @@ vo2-bot/
   `error`; `internal/httpx.Handle` adapts them and `internal/errs`
   (`NewBadRequest`, `NewNotFound`, `NewConflict`, …) renders typed
   responses.
-- **Strava / Telegram / Claude:** package stubs only.
+- **Strava schema.** `migrations/0002_strava.up.sql` creates 6 tables —
+  see [Strava: DB schema](#strava-db-schema) below.
+- **Strava collector.** `internal/strava` implements the full OAuth2 flow
+  and on-demand activity sync — see [Strava: internals](#strava-internals) below.
+- **Telegram / Claude:** package stubs only.
 
 ## Apple Health: the local-first decision
 
@@ -105,6 +116,98 @@ that triggers the import. The `Source` interface in `internal/apple`
 already anticipates a `GCSSource`; implementing it, deciding who uploads
 the zip, and deciding the import trigger (cron ping vs. GCS
 notification) are all deferred until the local flow is proven.
+
+## Strava: DB schema
+
+`db/migrations/0002_strava.up.sql` adds six tables:
+
+| Table | Purpose |
+| ----- | ------- |
+| `strava_athletes` | Athlete profile snapshot (name, city, weight, FTP, avatar URL). Upserted on every OAuth callback and on demand. |
+| `strava_tokens` | OAuth2 access + refresh tokens per athlete, with `expires_at`. One row per athlete; the access token is short-lived, the refresh token is long-lived. |
+| `telegram_strava_links` | Maps a Telegram `chat_id` to a Strava `athlete_id`. One-to-one for v1. Re-logging from a different chat upserts the mapping cleanly. |
+| `strava_activities` | Activity summary fields from `GET /athlete/activities`: sport type, timing, distance, elevation, speed, HR, power, cadence, suffer score. The full raw JSON is kept in a `payload JSONB` column for debugging and future backfill. |
+| `strava_sync_state` | One row per athlete holding the `last_activity_at` cursor for incremental sync and `last_synced_at` for observability. |
+| `strava_rate_limit` | Single row (enforced by `CHECK (id = 1)`) that mirrors the `X-RateLimit-Limit` / `X-RateLimit-Usage` response headers. Updated after every Strava API call; pre-seeded with Strava defaults (100 / 1 000). |
+
+All writes use `INSERT … ON CONFLICT … DO UPDATE` (upserts on natural keys),
+so every operation is safe to retry.
+
+## Strava: internals
+
+### OAuth flow
+
+1. The Telegram `/login` command (not yet wired) calls `client.AuthURL(chatID)`,
+   which generates a Strava authorization URL with an HMAC-SHA256-signed state
+   parameter. The state encodes `chatID` and a 10-minute expiry:
+   ```
+   state = "{chatID}:{expiry_unix}" + "." + HMAC-SHA256(payload, clientSecret)
+   ```
+   Using `STRAVA_CLIENT_SECRET` as the HMAC key is standard practice and
+   avoids an extra env var.
+
+2. After the athlete approves on Strava, `client.HandleCallback(ctx, state, code)`
+   is called by the HTTP callback handler:
+   - Verifies HMAC and TTL; rejects tampered or expired states.
+   - POSTs to `https://www.strava.com/oauth/token` to exchange the code for
+     tokens.
+   - Fetches the full athlete profile via `GET /api/v3/athlete` using the new
+     access token (the exchange response omits weight, FTP, and other fields).
+   - In **one transaction**: upserts `strava_athletes`, upserts `strava_tokens`,
+     upserts `telegram_strava_links`, seeds `strava_sync_state` with an empty
+     cursor.
+   - Returns `chatID` so the caller can reply "Linked ✓" to the right chat.
+
+### Token lifecycle
+
+Before every Strava API call, `client.do()` checks token expiry with a 30-second
+buffer. If the token has expired, `refresh()` POSTs to `/oauth/token` with
+`grant_type=refresh_token`, persists the new token pair, and returns the fresh
+access token transparently to the caller. On `HTTP 400 invalid_grant`, the
+tokens row is deleted and `ErrTokenRevoked` is returned so the bot can prompt
+the user to `/login` again.
+
+### Activity sync (`Sync`)
+
+`client.Sync(ctx, chatID)` is the implementation behind the future `/pull`
+Telegram command:
+
+1. Resolves `strava_athlete_id` from `telegram_strava_links` via `chatID`.
+   Returns an error if not linked.
+2. Acquires a **dedicated pgx connection** from the pool and runs
+   `pg_try_advisory_lock(athleteID)`. If another goroutine (on any pod) already
+   holds the lock for this athlete, returns "already syncing" immediately. The
+   lock is released via `pg_advisory_unlock` in a deferred call before the
+   connection is returned to the pool.
+3. Reads `strava_sync_state.last_activity_at` for the incremental cursor
+   (`after` parameter). First-ever sync uses `after=0` → full history walk.
+4. Pages through `GET /api/v3/athlete/activities?per_page=200&after=<cursor>`
+   until an empty page is returned, upsertng each activity.
+5. Updates `strava_sync_state`: sets `last_synced_at = now()`, advances
+   `last_activity_at` to the latest `start_date` seen. If no new activities
+   were found, the cursor is preserved unchanged.
+6. Queries `COUNT(*)` for the athlete's total stored activities.
+7. Returns `SyncResult{Added, Total, Latest}`.
+
+### Rate limiting
+
+`trackRateLimit()` is called after every `do()` response. It parses the
+`X-RateLimit-Limit` and `X-RateLimit-Usage` headers (format: `"15min,daily"`)
+and writes updated counters to `strava_rate_limit`. The handler for `/pull`
+can read this row before calling `Sync` and surface a user-friendly message
+("Strava rate limited — try again at HH:MM") instead of hitting a 429.
+`ErrRateLimited` is also returned by `do()` on `HTTP 429` for synchronous
+handling.
+
+### Horizontal-scale safety
+
+| Concern | How it's handled |
+| ------- | ---------------- |
+| Concurrent `/pull` for the same athlete | `pg_try_advisory_lock` — at most one winner per `athlete_id` across all pods |
+| Pod restart mid-sync | Advisory lock is session-level; it's automatically released when the connection closes, so the next `/pull` after a crash will succeed |
+| Multiple pods, different athletes | Each athlete has an independent lock key; no global bottleneck |
+| Token storage | Tokens live in DB — any pod can refresh and serve any athlete |
+| All writes idempotent | `INSERT … ON CONFLICT … DO UPDATE` throughout — safe to retry |
 
 ## Local run sequence
 
@@ -138,9 +241,8 @@ DB access is codegen'd by `sqlc`. All SQL lives under `db/`:
 
 Running `make sqlc` (or `cd db && sqlc generate`) produces
 `internal/store/queries/{db,models,queries.sql.go}` in package
-`queries`. Domain packages (e.g. `internal/apple`) import
-`internal/store/queries` directly and use `queries.Queries`,
-`queries.UpsertWorkoutParams`, `queries.AppleImport`, etc.
+`queries`. Domain packages (e.g. `internal/apple`, `internal/strava`) import
+`internal/store/queries` directly.
 
 Hand-written `pgx.CopyFrom` is kept for bulk inserts that sqlc can't
 express (see `internal/apple/store.go` for the `apple_workout_heart_rate`
@@ -180,8 +282,8 @@ make sqlc-install   # go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
    (no rows returned), `:execrows` (affected row count).
 3. Run `make sqlc`. This regenerates
    `internal/store/queries/{db,models,queries.sql.go}`.
-4. Call from a domain package (e.g. `internal/apple/store.go`):
-   `rows, err := s.q.GetWorkoutsInRange(ctx, queries.GetWorkoutsInRangeParams{...})`.
+4. Call from a domain package:
+   `rows, err := q.GetWorkoutsInRange(ctx, queries.GetWorkoutsInRangeParams{...})`.
 
 ### What sqlc can't do, and what to do instead
 
@@ -190,8 +292,9 @@ make sqlc-install   # go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
   on `apple_workout_heart_rate` and `apple_workout_route`.
 - **Dynamic `WHERE` clauses** (optional filters, variable IN-lists) —
   write multiple `:many` variants, or fall back to a hand-written
-  `pgx.Query` when the combinatorics get absurd. `GET /apple/data` will
-  likely need this.
+  `pgx.Query` when the combinatorics get absurd.
+- **Advisory locks** — execute raw SQL on a dedicated connection acquired via
+  `pool.Acquire(ctx)`. See `internal/strava/sync.go` for the pattern.
 
 ### Type overrides
 
@@ -200,17 +303,20 @@ and `timestamptz` → `time.Time` (so callers don't juggle the
 `pgtype.Timestamptz.Valid` flag on NOT NULL columns). Nullable
 `timestamptz` still surfaces as `pgtype.Timestamptz` in generated
 structs; `internal/apple/store.go` has `toTimestamptz` /
-`fromAppleImport` adapters for that edge.
+`fromAppleImport` adapters for that edge. The same pattern applies in
+`internal/strava/sync.go` for `StravaSyncState.LastActivityAt`.
 
 ## Environment variables
 
-See `.env.example`. The currently-used keys are:
+See `.env.example`. Currently-used keys:
 
 - `DATABASE_URL` — required.
-- `APPLE_ARCHIVE_DIR` — base directory for `source=local` imports,
-  default `local/apple`.
+- `APPLE_ARCHIVE_DIR` — base directory for `source=local` imports, default `local/apple`.
 - `HTTP_ADDR` — default `:8080`.
 - `CLAUDE_MODEL` — default `claude-opus-4-7`.
-- `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, `STRAVA_REDIRECT_URL`,
-  `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `ANTHROPIC_API_KEY`
-  — loaded but not yet consumed.
+- `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` — required for Strava OAuth2.
+  `STRAVA_CLIENT_SECRET` also serves as the HMAC key for signing OAuth state.
+- `STRAVA_REDIRECT_URL` — the callback URL registered in your Strava app
+  (e.g. `http://localhost:8080/strava/callback`). Must match exactly.
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `ANTHROPIC_API_KEY`
+  — loaded but not yet consumed (Telegram and Claude packages are stubs).
