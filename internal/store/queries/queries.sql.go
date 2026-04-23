@@ -94,6 +94,249 @@ func (q *Queries) InsertImport(ctx context.Context, arg InsertImportParams) (App
 	return i, err
 }
 
+const listDailyMetrics = `-- name: ListDailyMetrics :many
+SELECT metric_name, measured_at, source, qty, units
+  FROM apple_daily_metrics
+ WHERE measured_at >= $1
+   AND measured_at <  $2
+   AND (COALESCE(cardinality($3::text[]),   0) = 0 OR metric_name = ANY($3::text[]))
+   AND (COALESCE(cardinality($4::text[]), 0) = 0 OR source      = ANY($4::text[]))
+ ORDER BY metric_name, measured_at
+`
+
+type ListDailyMetricsParams struct {
+	FromAt  time.Time
+	ToAt    time.Time
+	Names   []string
+	Sources []string
+}
+
+func (q *Queries) ListDailyMetrics(ctx context.Context, arg ListDailyMetricsParams) ([]AppleDailyMetric, error) {
+	rows, err := q.db.Query(ctx, listDailyMetrics,
+		arg.FromAt,
+		arg.ToAt,
+		arg.Names,
+		arg.Sources,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AppleDailyMetric{}
+	for rows.Next() {
+		var i AppleDailyMetric
+		if err := rows.Scan(
+			&i.MetricName,
+			&i.MeasuredAt,
+			&i.Source,
+			&i.Qty,
+			&i.Units,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMetricNames = `-- name: ListMetricNames :many
+SELECT DISTINCT metric_name FROM apple_daily_metrics ORDER BY metric_name
+`
+
+func (q *Queries) ListMetricNames(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listMetricNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var metric_name string
+		if err := rows.Scan(&metric_name); err != nil {
+			return nil, err
+		}
+		items = append(items, metric_name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkoutHeartRate = `-- name: ListWorkoutHeartRate :many
+SELECT workout_id, measured_at, min_bpm, max_bpm, avg_bpm
+  FROM apple_workout_heart_rate
+ WHERE workout_id = ANY($1::uuid[])
+ ORDER BY workout_id, measured_at
+`
+
+func (q *Queries) ListWorkoutHeartRate(ctx context.Context, workoutIds []string) ([]AppleWorkoutHeartRate, error) {
+	rows, err := q.db.Query(ctx, listWorkoutHeartRate, workoutIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AppleWorkoutHeartRate{}
+	for rows.Next() {
+		var i AppleWorkoutHeartRate
+		if err := rows.Scan(
+			&i.WorkoutID,
+			&i.MeasuredAt,
+			&i.MinBpm,
+			&i.MaxBpm,
+			&i.AvgBpm,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkoutNames = `-- name: ListWorkoutNames :many
+SELECT DISTINCT name FROM apple_workouts ORDER BY name
+`
+
+func (q *Queries) ListWorkoutNames(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listWorkoutNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkoutRoute = `-- name: ListWorkoutRoute :many
+SELECT id, workout_id, recorded_at, latitude, longitude,
+       altitude_m, speed, horizontal_accuracy, course_accuracy
+  FROM apple_workout_route
+ WHERE workout_id = ANY($1::uuid[])
+ ORDER BY workout_id, recorded_at
+`
+
+func (q *Queries) ListWorkoutRoute(ctx context.Context, workoutIds []string) ([]AppleWorkoutRoute, error) {
+	rows, err := q.db.Query(ctx, listWorkoutRoute, workoutIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AppleWorkoutRoute{}
+	for rows.Next() {
+		var i AppleWorkoutRoute
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkoutID,
+			&i.RecordedAt,
+			&i.Latitude,
+			&i.Longitude,
+			&i.AltitudeM,
+			&i.Speed,
+			&i.HorizontalAccuracy,
+			&i.CourseAccuracy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkouts = `-- name: ListWorkouts :many
+
+SELECT id, name, source, is_indoor, location,
+       started_at, ended_at, duration_seconds,
+       distance_km, active_energy_kj,
+       avg_hr_bpm, max_hr_bpm, min_hr_bpm,
+       elevation_up_m, avg_speed, speed_units,
+       step_cadence, humidity_pct,
+       temperature, temperature_units,
+       intensity, payload, created_at
+  FROM apple_workouts
+ WHERE started_at >= $1
+   AND started_at <  $2
+   AND (COALESCE(cardinality($3::text[]), 0) = 0 OR name = ANY($3::text[]))
+ ORDER BY started_at DESC
+ LIMIT $4
+`
+
+type ListWorkoutsParams struct {
+	FromAt time.Time
+	ToAt   time.Time
+	Names  []string
+	Lim    int32
+}
+
+// NULL or empty arrays disable the corresponding filter.
+// cardinality(NULL) returns NULL in PG, so we wrap with COALESCE.
+func (q *Queries) ListWorkouts(ctx context.Context, arg ListWorkoutsParams) ([]AppleWorkout, error) {
+	rows, err := q.db.Query(ctx, listWorkouts,
+		arg.FromAt,
+		arg.ToAt,
+		arg.Names,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AppleWorkout{}
+	for rows.Next() {
+		var i AppleWorkout
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Source,
+			&i.IsIndoor,
+			&i.Location,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.DurationSeconds,
+			&i.DistanceKm,
+			&i.ActiveEnergyKj,
+			&i.AvgHrBpm,
+			&i.MaxHrBpm,
+			&i.MinHrBpm,
+			&i.ElevationUpM,
+			&i.AvgSpeed,
+			&i.SpeedUnits,
+			&i.StepCadence,
+			&i.HumidityPct,
+			&i.Temperature,
+			&i.TemperatureUnits,
+			&i.Intensity,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertDailyMetric = `-- name: UpsertDailyMetric :exec
 INSERT INTO apple_daily_metrics (metric_name, measured_at, source, qty, units)
 VALUES ($1, $2, $3, $4, $5)

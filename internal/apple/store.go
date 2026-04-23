@@ -9,18 +9,25 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mariiatuzovska/vo2-bot/internal/store/queries"
 )
 
-type Store struct {
-	Pool *pgxpool.Pool
-	q    *queries.Queries
+// DB is any pgx connection that can run sqlc queries AND start a (sub)
+// transaction. Both *pgxpool.Pool and pgx.Tx satisfy it; the latter
+// lets tests wrap each case in a tx so all writes get rolled back.
+type DB interface {
+	queries.DBTX
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
-func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{Pool: pool, q: queries.New(pool)}
+type Store struct {
+	db DB
+	q  *queries.Queries
+}
+
+func NewStore(db DB) *Store {
+	return &Store{db: db, q: queries.New(db)}
 }
 
 type ImportRecord struct {
@@ -45,6 +52,30 @@ func (s *Store) LookupImport(ctx context.Context, sha256 string) (*ImportRecord,
 	return fromAppleImport(row), nil
 }
 
+func (s *Store) ListWorkouts(ctx context.Context, p queries.ListWorkoutsParams) ([]queries.AppleWorkout, error) {
+	return s.q.ListWorkouts(ctx, p)
+}
+
+func (s *Store) ListWorkoutHeartRate(ctx context.Context, ids []string) ([]queries.AppleWorkoutHeartRate, error) {
+	return s.q.ListWorkoutHeartRate(ctx, ids)
+}
+
+func (s *Store) ListWorkoutRoute(ctx context.Context, ids []string) ([]queries.AppleWorkoutRoute, error) {
+	return s.q.ListWorkoutRoute(ctx, ids)
+}
+
+func (s *Store) ListDailyMetrics(ctx context.Context, p queries.ListDailyMetricsParams) ([]queries.AppleDailyMetric, error) {
+	return s.q.ListDailyMetrics(ctx, p)
+}
+
+func (s *Store) ListWorkoutNames(ctx context.Context) ([]string, error) {
+	return s.q.ListWorkoutNames(ctx)
+}
+
+func (s *Store) ListMetricNames(ctx context.Context) ([]string, error) {
+	return s.q.ListMetricNames(ctx)
+}
+
 type persistInput struct {
 	sourceFilename string
 	sha256         string
@@ -58,7 +89,7 @@ type typedWorkout struct {
 }
 
 func (s *Store) Persist(ctx context.Context, in persistInput) (*ImportRecord, error) {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
