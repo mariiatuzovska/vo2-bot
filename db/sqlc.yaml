@@ -1,0 +1,22 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "migrations"
+    queries: "queries.sql"
+    gen:
+      go:
+        package: "queries"
+        out: "../internal/store/queries"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          # HAE emits workout IDs as UUID strings; persist them as-is
+          # rather than round-tripping through pgtype.UUID.
+          - db_type: "uuid"
+            go_type: "string"
+          # Use time.Time instead of pgtype.Timestamptz. Combined with
+          # emit_pointers_for_null_types, nullable columns come out as
+          # *time.Time (NOT NULL columns come out as time.Time).
+          - db_type: "timestamptz"
+            go_type: "time.Time"

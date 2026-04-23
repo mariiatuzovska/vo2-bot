@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	DatabaseURL            string
+	HTTPAddr               string
 	StravaClientID         string
 	StravaClientSecret     string
 	StravaRedirectURL      string
@@ -16,6 +17,7 @@ type Config struct {
 	TelegramAllowedChatIDs string
 	AnthropicAPIKey        string
 	ClaudeModel            string
+	AppleArchiveDir        string
 }
 
 func Load() (*Config, error) {
@@ -29,6 +31,8 @@ func Load() (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	v.SetDefault("CLAUDE_MODEL", "claude-opus-4-7")
+	v.SetDefault("HTTP_ADDR", ":8080")
+	v.SetDefault("APPLE_ARCHIVE_DIR", "local/apple")
 
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -38,6 +42,7 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		DatabaseURL:            v.GetString("DATABASE_URL"),
+		HTTPAddr:               v.GetString("HTTP_ADDR"),
 		StravaClientID:         v.GetString("STRAVA_CLIENT_ID"),
 		StravaClientSecret:     v.GetString("STRAVA_CLIENT_SECRET"),
 		StravaRedirectURL:      v.GetString("STRAVA_REDIRECT_URL"),
@@ -45,6 +50,7 @@ func Load() (*Config, error) {
 		TelegramAllowedChatIDs: v.GetString("TELEGRAM_ALLOWED_CHAT_IDS"),
 		AnthropicAPIKey:        v.GetString("ANTHROPIC_API_KEY"),
 		ClaudeModel:            v.GetString("CLAUDE_MODEL"),
+		AppleArchiveDir:        v.GetString("APPLE_ARCHIVE_DIR"),
 	}
 
 	if cfg.DatabaseURL == "" {

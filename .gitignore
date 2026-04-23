@@ -31,3 +31,6 @@ infra/crash.*.log
 
 # Local planning
 PLAN.md
+
+# Local-only workspace (personal data, scratch files, archives)
+/local/
