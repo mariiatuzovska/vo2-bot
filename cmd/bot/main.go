@@ -14,6 +14,7 @@ import (
 	"github.com/mariiatuzovska/vo2-bot/internal/apple"
 	"github.com/mariiatuzovska/vo2-bot/internal/config"
 	"github.com/mariiatuzovska/vo2-bot/internal/store"
+	"github.com/mariiatuzovska/vo2-bot/internal/strava"
 )
 
 func main() {
@@ -35,14 +36,9 @@ func main() {
 	}
 	defer db.Close()
 
-	appleSvc := &apple.Service{
-		Source: &apple.LocalSource{BaseDir: cfg.AppleArchiveDir},
-		Store:  apple.NewStore(db.Pool),
-	}
-	appleHandler := &apple.Handler{Service: appleSvc}
-
 	mux := http.NewServeMux()
-	appleHandler.Register(mux)
+	registerApple(mux, cfg, db)
+	registerStrava(mux, cfg, db)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -66,4 +62,22 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http shutdown: %v", err)
 	}
+}
+
+func registerApple(mux *http.ServeMux, cfg *config.Config, db *store.Store) {
+	svc := &apple.Service{
+		Source: &apple.LocalSource{BaseDir: cfg.AppleArchiveDir},
+		Store:  apple.NewStore(db.Pool),
+	}
+	(&apple.Handler{Service: svc}).Register(mux)
+}
+
+func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) {
+	client := strava.New(
+		cfg.StravaClientID,
+		cfg.StravaClientSecret,
+		cfg.StravaRedirectURL,
+		db.Pool,
+	)
+	(&strava.Handler{Client: client}).Register(mux)
 }
