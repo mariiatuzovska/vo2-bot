@@ -12,6 +12,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countStravaActivities = `-- name: CountStravaActivities :one
+SELECT COUNT(*) FROM strava_activities WHERE strava_athlete_id = $1
+`
+
+func (q *Queries) CountStravaActivities(ctx context.Context, stravaAthleteID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countStravaActivities, stravaAthleteID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteStravaTokens = `-- name: DeleteStravaTokens :exec
+DELETE FROM strava_tokens WHERE strava_athlete_id = $1
+`
+
+func (q *Queries) DeleteStravaTokens(ctx context.Context, stravaAthleteID int64) error {
+	_, err := q.db.Exec(ctx, deleteStravaTokens, stravaAthleteID)
+	return err
+}
+
 const deleteWorkoutHeartRate = `-- name: DeleteWorkoutHeartRate :exec
 DELETE FROM apple_workout_heart_rate WHERE workout_id = $1
 `
@@ -50,6 +70,65 @@ func (q *Queries) GetImportBySha256(ctx context.Context, sourceSha256 string) (A
 		&i.MetricsAdded,
 		&i.ImportedAt,
 	)
+	return i, err
+}
+
+const getRateLimit = `-- name: GetRateLimit :one
+SELECT short_limit, short_usage, daily_limit, daily_usage, updated_at
+  FROM strava_rate_limit
+ WHERE id = 1
+`
+
+type GetRateLimitRow struct {
+	ShortLimit int32
+	ShortUsage int32
+	DailyLimit int32
+	DailyUsage int32
+	UpdatedAt  time.Time
+}
+
+func (q *Queries) GetRateLimit(ctx context.Context) (GetRateLimitRow, error) {
+	row := q.db.QueryRow(ctx, getRateLimit)
+	var i GetRateLimitRow
+	err := row.Scan(
+		&i.ShortLimit,
+		&i.ShortUsage,
+		&i.DailyLimit,
+		&i.DailyUsage,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getStravaTokens = `-- name: GetStravaTokens :one
+SELECT strava_athlete_id, access_token, refresh_token, expires_at, updated_at
+  FROM strava_tokens
+ WHERE strava_athlete_id = $1
+`
+
+func (q *Queries) GetStravaTokens(ctx context.Context, stravaAthleteID int64) (StravaToken, error) {
+	row := q.db.QueryRow(ctx, getStravaTokens, stravaAthleteID)
+	var i StravaToken
+	err := row.Scan(
+		&i.StravaAthleteID,
+		&i.AccessToken,
+		&i.RefreshToken,
+		&i.ExpiresAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getSyncState = `-- name: GetSyncState :one
+SELECT strava_athlete_id, last_synced_at, last_activity_at
+  FROM strava_sync_state
+ WHERE strava_athlete_id = $1
+`
+
+func (q *Queries) GetSyncState(ctx context.Context, stravaAthleteID int64) (StravaSyncState, error) {
+	row := q.db.QueryRow(ctx, getSyncState, stravaAthleteID)
+	var i StravaSyncState
+	err := row.Scan(&i.StravaAthleteID, &i.LastSyncedAt, &i.LastActivityAt)
 	return i, err
 }
 
@@ -92,6 +171,24 @@ func (q *Queries) InsertImport(ctx context.Context, arg InsertImportParams) (App
 		&i.ImportedAt,
 	)
 	return i, err
+}
+
+const linkTelegramChat = `-- name: LinkTelegramChat :exec
+INSERT INTO telegram_strava_links (telegram_chat_id, strava_athlete_id)
+VALUES ($1, $2)
+ON CONFLICT (telegram_chat_id) DO UPDATE SET
+    strava_athlete_id = EXCLUDED.strava_athlete_id,
+    linked_at         = now()
+`
+
+type LinkTelegramChatParams struct {
+	TelegramChatID  int64
+	StravaAthleteID int64
+}
+
+func (q *Queries) LinkTelegramChat(ctx context.Context, arg LinkTelegramChatParams) error {
+	_, err := q.db.Exec(ctx, linkTelegramChat, arg.TelegramChatID, arg.StravaAthleteID)
+	return err
 }
 
 const listDailyMetrics = `-- name: ListDailyMetrics :many
@@ -337,6 +434,53 @@ func (q *Queries) ListWorkouts(ctx context.Context, arg ListWorkoutsParams) ([]A
 	return items, nil
 }
 
+const resolveAthleteByChat = `-- name: ResolveAthleteByChat :one
+SELECT strava_athlete_id FROM telegram_strava_links WHERE telegram_chat_id = $1
+`
+
+func (q *Queries) ResolveAthleteByChat(ctx context.Context, telegramChatID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, resolveAthleteByChat, telegramChatID)
+	var strava_athlete_id int64
+	err := row.Scan(&strava_athlete_id)
+	return strava_athlete_id, err
+}
+
+const unlinkTelegramChat = `-- name: UnlinkTelegramChat :exec
+DELETE FROM telegram_strava_links WHERE telegram_chat_id = $1
+`
+
+func (q *Queries) UnlinkTelegramChat(ctx context.Context, telegramChatID int64) error {
+	_, err := q.db.Exec(ctx, unlinkTelegramChat, telegramChatID)
+	return err
+}
+
+const updateRateLimit = `-- name: UpdateRateLimit :exec
+UPDATE strava_rate_limit
+   SET short_limit  = $1,
+       short_usage  = $2,
+       daily_limit  = $3,
+       daily_usage  = $4,
+       updated_at   = now()
+ WHERE id = 1
+`
+
+type UpdateRateLimitParams struct {
+	ShortLimit int32
+	ShortUsage int32
+	DailyLimit int32
+	DailyUsage int32
+}
+
+func (q *Queries) UpdateRateLimit(ctx context.Context, arg UpdateRateLimitParams) error {
+	_, err := q.db.Exec(ctx, updateRateLimit,
+		arg.ShortLimit,
+		arg.ShortUsage,
+		arg.DailyLimit,
+		arg.DailyUsage,
+	)
+	return err
+}
+
 const upsertDailyMetric = `-- name: UpsertDailyMetric :exec
 INSERT INTO apple_daily_metrics (metric_name, measured_at, source, qty, units)
 VALUES ($1, $2, $3, $4, $5)
@@ -361,6 +505,191 @@ func (q *Queries) UpsertDailyMetric(ctx context.Context, arg UpsertDailyMetricPa
 		arg.Qty,
 		arg.Units,
 	)
+	return err
+}
+
+const upsertStravaActivity = `-- name: UpsertStravaActivity :exec
+INSERT INTO strava_activities (
+    strava_activity_id, strava_athlete_id, name, sport_type, workout_type,
+    start_at, start_at_local, timezone,
+    distance_m, moving_time_s, elapsed_time_s, elevation_gain_m,
+    average_speed_mps, max_speed_mps, average_heartrate, max_heartrate,
+    average_watts, average_cadence, suffer_score,
+    trainer, commute, payload, fetched_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, now()
+)
+ON CONFLICT (strava_activity_id) DO UPDATE SET
+    name              = EXCLUDED.name,
+    sport_type        = EXCLUDED.sport_type,
+    workout_type      = EXCLUDED.workout_type,
+    start_at          = EXCLUDED.start_at,
+    start_at_local    = EXCLUDED.start_at_local,
+    timezone          = EXCLUDED.timezone,
+    distance_m        = EXCLUDED.distance_m,
+    moving_time_s     = EXCLUDED.moving_time_s,
+    elapsed_time_s    = EXCLUDED.elapsed_time_s,
+    elevation_gain_m  = EXCLUDED.elevation_gain_m,
+    average_speed_mps = EXCLUDED.average_speed_mps,
+    max_speed_mps     = EXCLUDED.max_speed_mps,
+    average_heartrate = EXCLUDED.average_heartrate,
+    max_heartrate     = EXCLUDED.max_heartrate,
+    average_watts     = EXCLUDED.average_watts,
+    average_cadence   = EXCLUDED.average_cadence,
+    suffer_score      = EXCLUDED.suffer_score,
+    trainer           = EXCLUDED.trainer,
+    commute           = EXCLUDED.commute,
+    payload           = EXCLUDED.payload,
+    fetched_at        = now()
+`
+
+type UpsertStravaActivityParams struct {
+	StravaActivityID int64
+	StravaAthleteID  int64
+	Name             string
+	SportType        string
+	WorkoutType      *int32
+	StartAt          time.Time
+	StartAtLocal     pgtype.Timestamptz
+	Timezone         *string
+	DistanceM        *float64
+	MovingTimeS      *int32
+	ElapsedTimeS     *int32
+	ElevationGainM   *float64
+	AverageSpeedMps  *float64
+	MaxSpeedMps      *float64
+	AverageHeartrate *float64
+	MaxHeartrate     *float64
+	AverageWatts     *float64
+	AverageCadence   *float64
+	SufferScore      *int32
+	Trainer          *bool
+	Commute          *bool
+	Payload          []byte
+}
+
+func (q *Queries) UpsertStravaActivity(ctx context.Context, arg UpsertStravaActivityParams) error {
+	_, err := q.db.Exec(ctx, upsertStravaActivity,
+		arg.StravaActivityID,
+		arg.StravaAthleteID,
+		arg.Name,
+		arg.SportType,
+		arg.WorkoutType,
+		arg.StartAt,
+		arg.StartAtLocal,
+		arg.Timezone,
+		arg.DistanceM,
+		arg.MovingTimeS,
+		arg.ElapsedTimeS,
+		arg.ElevationGainM,
+		arg.AverageSpeedMps,
+		arg.MaxSpeedMps,
+		arg.AverageHeartrate,
+		arg.MaxHeartrate,
+		arg.AverageWatts,
+		arg.AverageCadence,
+		arg.SufferScore,
+		arg.Trainer,
+		arg.Commute,
+		arg.Payload,
+	)
+	return err
+}
+
+const upsertStravaAthlete = `-- name: UpsertStravaAthlete :exec
+
+INSERT INTO strava_athletes (
+    strava_athlete_id, username, firstname, lastname,
+    city, country, sex, weight_kg, ftp_watts, profile_url, fetched_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+ON CONFLICT (strava_athlete_id) DO UPDATE SET
+    username    = EXCLUDED.username,
+    firstname   = EXCLUDED.firstname,
+    lastname    = EXCLUDED.lastname,
+    city        = EXCLUDED.city,
+    country     = EXCLUDED.country,
+    sex         = EXCLUDED.sex,
+    weight_kg   = EXCLUDED.weight_kg,
+    ftp_watts   = EXCLUDED.ftp_watts,
+    profile_url = EXCLUDED.profile_url,
+    fetched_at  = now()
+`
+
+type UpsertStravaAthleteParams struct {
+	StravaAthleteID int64
+	Username        *string
+	Firstname       *string
+	Lastname        *string
+	City            *string
+	Country         *string
+	Sex             *string
+	WeightKg        *float64
+	FtpWatts        *int32
+	ProfileUrl      *string
+}
+
+// ============================================================
+// Strava
+// ============================================================
+func (q *Queries) UpsertStravaAthlete(ctx context.Context, arg UpsertStravaAthleteParams) error {
+	_, err := q.db.Exec(ctx, upsertStravaAthlete,
+		arg.StravaAthleteID,
+		arg.Username,
+		arg.Firstname,
+		arg.Lastname,
+		arg.City,
+		arg.Country,
+		arg.Sex,
+		arg.WeightKg,
+		arg.FtpWatts,
+		arg.ProfileUrl,
+	)
+	return err
+}
+
+const upsertStravaTokens = `-- name: UpsertStravaTokens :exec
+INSERT INTO strava_tokens (strava_athlete_id, access_token, refresh_token, expires_at, updated_at)
+VALUES ($1, $2, $3, $4, now())
+ON CONFLICT (strava_athlete_id) DO UPDATE SET
+    access_token  = EXCLUDED.access_token,
+    refresh_token = EXCLUDED.refresh_token,
+    expires_at    = EXCLUDED.expires_at,
+    updated_at    = now()
+`
+
+type UpsertStravaTokensParams struct {
+	StravaAthleteID int64
+	AccessToken     string
+	RefreshToken    string
+	ExpiresAt       time.Time
+}
+
+func (q *Queries) UpsertStravaTokens(ctx context.Context, arg UpsertStravaTokensParams) error {
+	_, err := q.db.Exec(ctx, upsertStravaTokens,
+		arg.StravaAthleteID,
+		arg.AccessToken,
+		arg.RefreshToken,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
+const upsertSyncState = `-- name: UpsertSyncState :exec
+INSERT INTO strava_sync_state (strava_athlete_id, last_synced_at, last_activity_at)
+VALUES ($1, now(), $2)
+ON CONFLICT (strava_athlete_id) DO UPDATE SET
+    last_synced_at   = now(),
+    last_activity_at = EXCLUDED.last_activity_at
+`
+
+type UpsertSyncStateParams struct {
+	StravaAthleteID int64
+	LastActivityAt  pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertSyncState(ctx context.Context, arg UpsertSyncStateParams) error {
+	_, err := q.db.Exec(ctx, upsertSyncState, arg.StravaAthleteID, arg.LastActivityAt)
 	return err
 }
 

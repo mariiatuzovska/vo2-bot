@@ -74,3 +74,72 @@ type AppleWorkoutRoute struct {
 	HorizontalAccuracy *float64
 	CourseAccuracy     *float64
 }
+
+type StravaActivity struct {
+	StravaActivityID int64
+	StravaAthleteID  int64
+	Name             string
+	SportType        string
+	WorkoutType      *int32
+	StartAt          time.Time
+	StartAtLocal     pgtype.Timestamptz
+	Timezone         *string
+	DistanceM        *float64
+	MovingTimeS      *int32
+	ElapsedTimeS     *int32
+	ElevationGainM   *float64
+	AverageSpeedMps  *float64
+	MaxSpeedMps      *float64
+	AverageHeartrate *float64
+	MaxHeartrate     *float64
+	AverageWatts     *float64
+	AverageCadence   *float64
+	SufferScore      *int32
+	Trainer          *bool
+	Commute          *bool
+	Payload          []byte
+	FetchedAt        time.Time
+}
+
+type StravaAthlete struct {
+	StravaAthleteID int64
+	Username        *string
+	Firstname       *string
+	Lastname        *string
+	City            *string
+	Country         *string
+	Sex             *string
+	WeightKg        *float64
+	FtpWatts        *int32
+	ProfileUrl      *string
+	FetchedAt       time.Time
+}
+
+type StravaRateLimit struct {
+	ID         int32
+	ShortLimit int32
+	ShortUsage int32
+	DailyLimit int32
+	DailyUsage int32
+	UpdatedAt  time.Time
+}
+
+type StravaSyncState struct {
+	StravaAthleteID int64
+	LastSyncedAt    pgtype.Timestamptz
+	LastActivityAt  pgtype.Timestamptz
+}
+
+type StravaToken struct {
+	StravaAthleteID int64
+	AccessToken     string
+	RefreshToken    string
+	ExpiresAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type TelegramStravaLink struct {
+	TelegramChatID  int64
+	StravaAthleteID int64
+	LinkedAt        time.Time
+}
