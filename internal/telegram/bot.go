@@ -5,21 +5,35 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/mariiatuzovska/vo2-bot/internal/apple"
+	"github.com/mariiatuzovska/vo2-bot/internal/claude"
+	"github.com/mariiatuzovska/vo2-bot/internal/coach"
 	"github.com/mariiatuzovska/vo2-bot/internal/strava"
 )
 
-type Bot struct {
-	api     *tgbotapi.BotAPI
-	strava  *strava.Client
-	apple   *apple.Service
-	allowed map[int64]bool // empty = allow all (dev mode)
+// coachSession holds a per-chat conversation. The system prompt embeds the
+// metrics block fetched once at /coach time; history grows across turns.
+type coachSession struct {
+	system  string
+	history []claude.Message
 }
 
-func New(token string, allowedIDs string, stravaClient *strava.Client, appleService *apple.Service) (*Bot, error) {
+type Bot struct {
+	api      *tgbotapi.BotAPI
+	strava   *strava.Client
+	apple    *apple.Service
+	claude   *claude.Client
+	coach    *coach.Builder
+	allowed  map[int64]bool // empty = allow all (dev mode)
+	mu       sync.Mutex
+	sessions map[int64]*coachSession
+}
+
+func New(token string, allowedIDs string, stravaClient *strava.Client, appleService *apple.Service, claudeClient *claude.Client, coachBuilder *coach.Builder) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, err
@@ -37,7 +51,15 @@ func New(token string, allowedIDs string, stravaClient *strava.Client, appleServ
 		log.Printf("telegram: allowed chat IDs: %v", ids)
 	}
 
-	return &Bot{api: api, strava: stravaClient, apple: appleService, allowed: allowed}, nil
+	return &Bot{
+		api:      api,
+		strava:   stravaClient,
+		apple:    appleService,
+		claude:   claudeClient,
+		coach:    coachBuilder,
+		allowed:  allowed,
+		sessions: make(map[int64]*coachSession),
+	}, nil
 }
 
 // Run starts the long-poll loop and blocks until ctx is cancelled.
@@ -71,6 +93,9 @@ func (b *Bot) dispatch(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 	if !msg.IsCommand() {
+		if msg.Text != "" && b.hasSession(msg.Chat.ID) {
+			b.handleCoachFollowup(ctx, msg)
+		}
 		return
 	}
 	switch msg.Command() {
@@ -80,9 +105,20 @@ func (b *Bot) dispatch(ctx context.Context, msg *tgbotapi.Message) {
 		b.handleSyncStrava(ctx, msg)
 	case "apple":
 		b.handleApple(ctx, msg)
+	case "coach":
+		b.handleCoach(ctx, msg)
+	case "end":
+		b.handleEndCoach(msg)
 	default:
 		b.reply(msg, "Unknown command. Use /help to see available commands.")
 	}
+}
+
+func (b *Bot) hasSession(chatID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.sessions[chatID]
+	return ok
 }
 
 func (b *Bot) reply(msg *tgbotapi.Message, text string) {

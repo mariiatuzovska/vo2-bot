@@ -263,6 +263,70 @@ func (q *Queries) ListMetricNames(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
+const listRecentStravaActivities = `-- name: ListRecentStravaActivities :many
+SELECT strava_activity_id, strava_athlete_id, name, sport_type, workout_type,
+       start_at, start_at_local, timezone,
+       distance_m, moving_time_s, elapsed_time_s, elevation_gain_m,
+       average_speed_mps, max_speed_mps, average_heartrate, max_heartrate,
+       average_watts, average_cadence, suffer_score,
+       trainer, commute, payload, fetched_at
+  FROM strava_activities
+ WHERE strava_athlete_id = $1
+   AND start_at >= $2
+ ORDER BY start_at DESC
+ LIMIT $3
+`
+
+type ListRecentStravaActivitiesParams struct {
+	AthleteID int64
+	Since     time.Time
+	Lim       int32
+}
+
+func (q *Queries) ListRecentStravaActivities(ctx context.Context, arg ListRecentStravaActivitiesParams) ([]StravaActivity, error) {
+	rows, err := q.db.Query(ctx, listRecentStravaActivities, arg.AthleteID, arg.Since, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []StravaActivity{}
+	for rows.Next() {
+		var i StravaActivity
+		if err := rows.Scan(
+			&i.StravaActivityID,
+			&i.StravaAthleteID,
+			&i.Name,
+			&i.SportType,
+			&i.WorkoutType,
+			&i.StartAt,
+			&i.StartAtLocal,
+			&i.Timezone,
+			&i.DistanceM,
+			&i.MovingTimeS,
+			&i.ElapsedTimeS,
+			&i.ElevationGainM,
+			&i.AverageSpeedMps,
+			&i.MaxSpeedMps,
+			&i.AverageHeartrate,
+			&i.MaxHeartrate,
+			&i.AverageWatts,
+			&i.AverageCadence,
+			&i.SufferScore,
+			&i.Trainer,
+			&i.Commute,
+			&i.Payload,
+			&i.FetchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkoutHeartRate = `-- name: ListWorkoutHeartRate :many
 SELECT workout_id, measured_at, min_bpm, max_bpm, avg_bpm
   FROM apple_workout_heart_rate

@@ -226,3 +226,16 @@ DELETE FROM telegram_strava_links WHERE telegram_chat_id = $1;
 
 -- name: CountStravaActivities :one
 SELECT COUNT(*) FROM strava_activities WHERE strava_athlete_id = $1;
+
+-- name: ListRecentStravaActivities :many
+SELECT strava_activity_id, strava_athlete_id, name, sport_type, workout_type,
+       start_at, start_at_local, timezone,
+       distance_m, moving_time_s, elapsed_time_s, elevation_gain_m,
+       average_speed_mps, max_speed_mps, average_heartrate, max_heartrate,
+       average_watts, average_cadence, suffer_score,
+       trainer, commute, payload, fetched_at
+  FROM strava_activities
+ WHERE strava_athlete_id = @athlete_id
+   AND start_at >= @since
+ ORDER BY start_at DESC
+ LIMIT @lim;
