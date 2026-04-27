@@ -15,6 +15,7 @@ import (
 	"github.com/mariiatuzovska/vo2-bot/internal/config"
 	"github.com/mariiatuzovska/vo2-bot/internal/store"
 	"github.com/mariiatuzovska/vo2-bot/internal/strava"
+	"github.com/mariiatuzovska/vo2-bot/internal/telegram"
 )
 
 func main() {
@@ -38,7 +39,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	registerApple(mux, cfg, db)
-	registerStrava(mux, cfg, db)
+	registerTelegram(ctx, cfg, registerStrava(mux, cfg, db))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -72,7 +73,7 @@ func registerApple(mux *http.ServeMux, cfg *config.Config, db *store.Store) {
 	(&apple.Handler{Service: svc}).Register(mux)
 }
 
-func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) {
+func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) *strava.Client {
 	client := strava.New(
 		cfg.StravaClientID,
 		cfg.StravaClientSecret,
@@ -80,4 +81,17 @@ func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) {
 		db.Pool,
 	)
 	(&strava.Handler{Client: client}).Register(mux)
+	return client
+}
+
+func registerTelegram(ctx context.Context, cfg *config.Config, stravaClient *strava.Client) {
+	if cfg.TelegramBotToken == "" {
+		log.Println("TELEGRAM_BOT_TOKEN not set — bot disabled")
+		return
+	}
+	bot, err := telegram.New(cfg.TelegramBotToken, cfg.TelegramAllowedChatIDs, stravaClient)
+	if err != nil {
+		log.Fatalf("telegram: %v", err)
+	}
+	go bot.Run(ctx)
 }

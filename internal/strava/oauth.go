@@ -80,6 +80,11 @@ func (c *Client) HandleCallback(ctx context.Context, state, code string) (chatID
 	}); err != nil {
 		return 0, fmt.Errorf("upsert tokens: %w", err)
 	}
+	// Remove any existing link for this athlete (e.g. previously linked via Postman
+	// with a test chat_id) before inserting the real one.
+	if err := qtx.UnlinkAthleteFromAllChats(ctx, athlete.ID); err != nil {
+		return 0, fmt.Errorf("unlink athlete: %w", err)
+	}
 	if err := qtx.LinkTelegramChat(ctx, queries.LinkTelegramChatParams{
 		TelegramChatID:  chatID,
 		StravaAthleteID: athlete.ID,

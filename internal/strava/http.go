@@ -82,9 +82,8 @@ func (h *Handler) pull(w http.ResponseWriter, r *http.Request) error {
 	}
 	if result.Latest != nil {
 		resp["latest"] = map[string]any{
-			"id":         result.Latest.ID,
 			"name":       result.Latest.Name,
-			"sport_type": result.Latest.sportType(),
+			"sport_type": result.Latest.SportType,
 			"start_date": result.Latest.StartDate,
 		}
 	}
