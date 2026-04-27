@@ -53,7 +53,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) error {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Linked ✓ (chat_id=%d) — head back to Telegram and run /pull", chatID)
+	fmt.Fprintf(w, "Linked ✓ (chat_id=%d) — head back to Telegram and run /strava", chatID)
 	return nil
 }
 

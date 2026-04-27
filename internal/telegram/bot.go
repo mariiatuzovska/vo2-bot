@@ -8,16 +8,18 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"github.com/mariiatuzovska/vo2-bot/internal/apple"
 	"github.com/mariiatuzovska/vo2-bot/internal/strava"
 )
 
 type Bot struct {
 	api     *tgbotapi.BotAPI
 	strava  *strava.Client
+	apple   *apple.Service
 	allowed map[int64]bool // empty = allow all (dev mode)
 }
 
-func New(token string, allowedIDs string, stravaClient *strava.Client) (*Bot, error) {
+func New(token string, allowedIDs string, stravaClient *strava.Client, appleService *apple.Service) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, err
@@ -27,9 +29,15 @@ func New(token string, allowedIDs string, stravaClient *strava.Client) (*Bot, er
 	allowed := parseAllowedIDs(allowedIDs)
 	if len(allowed) == 0 {
 		log.Println("telegram: TELEGRAM_ALLOWED_CHAT_IDS not set — accepting all chats (dev mode)")
+	} else {
+		ids := make([]int64, 0, len(allowed))
+		for id := range allowed {
+			ids = append(ids, id)
+		}
+		log.Printf("telegram: allowed chat IDs: %v", ids)
 	}
 
-	return &Bot{api: api, strava: stravaClient, allowed: allowed}, nil
+	return &Bot{api: api, strava: stravaClient, apple: appleService, allowed: allowed}, nil
 }
 
 // Run starts the long-poll loop and blocks until ctx is cancelled.
@@ -68,10 +76,10 @@ func (b *Bot) dispatch(ctx context.Context, msg *tgbotapi.Message) {
 	switch msg.Command() {
 	case "start", "help":
 		b.handleStart(msg)
-	case "login":
-		b.handleLogin(msg)
-	case "pull":
-		b.handlePull(ctx, msg)
+	case "strava":
+		b.handleSyncStrava(ctx, msg)
+	case "apple":
+		b.handleApple(ctx, msg)
 	default:
 		b.reply(msg, "Unknown command. Use /help to see available commands.")
 	}

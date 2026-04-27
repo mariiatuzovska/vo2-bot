@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,8 +40,7 @@ func main() {
 	defer db.Close()
 
 	mux := http.NewServeMux()
-	registerApple(mux, cfg, db)
-	registerTelegram(ctx, cfg, registerStrava(mux, cfg, db))
+	registerTelegram(ctx, cfg, registerStrava(mux, cfg, db), registerApple(mux, cfg, db))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -65,12 +66,13 @@ func main() {
 	}
 }
 
-func registerApple(mux *http.ServeMux, cfg *config.Config, db *store.Store) {
+func registerApple(mux *http.ServeMux, cfg *config.Config, db *store.Store) *apple.Service {
 	svc := &apple.Service{
 		Source: &apple.LocalSource{BaseDir: cfg.AppleArchiveDir},
 		Store:  apple.NewStore(db.Pool),
 	}
 	(&apple.Handler{Service: svc}).Register(mux)
+	return svc
 }
 
 func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) *strava.Client {
@@ -84,14 +86,33 @@ func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) *st
 	return client
 }
 
-func registerTelegram(ctx context.Context, cfg *config.Config, stravaClient *strava.Client) {
+func registerTelegram(ctx context.Context, cfg *config.Config, stravaClient *strava.Client, appleService *apple.Service) {
 	if cfg.TelegramBotToken == "" {
-		log.Println("TELEGRAM_BOT_TOKEN not set — bot disabled")
-		return
+		log.Fatal("TELEGRAM_BOT_TOKEN not set")
 	}
-	bot, err := telegram.New(cfg.TelegramBotToken, cfg.TelegramAllowedChatIDs, stravaClient)
+	bot, err := telegram.New(cfg.TelegramBotToken, cfg.TelegramAllowedChatIDs, stravaClient, appleService)
 	if err != nil {
 		log.Fatalf("telegram: %v", err)
 	}
+	if id := primaryChatID(cfg.TelegramAllowedChatIDs); id != 0 {
+		log.Printf("strava: connect at %s", stravaClient.AuthURL(id))
+	} else {
+		log.Println("strava: TELEGRAM_ALLOWED_CHAT_IDS empty — set it to print a Strava auth URL")
+	}
 	go bot.Run(ctx)
+}
+
+// primaryChatID returns the first chat ID parsed from a comma-separated list,
+// used to bind the startup Strava OAuth URL to the operator's chat.
+func primaryChatID(raw string) int64 {
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if id, err := strconv.ParseInt(s, 10, 64); err == nil && id != 0 {
+			return id
+		}
+	}
+	return 0
 }

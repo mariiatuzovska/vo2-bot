@@ -30,7 +30,7 @@ type SyncResult struct {
 func (c *Client) Sync(ctx context.Context, chatID int64) (*SyncResult, error) {
 	athleteID, err := c.q.ResolveAthleteByChat(ctx, chatID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("not linked — run /login first")
+		return nil, fmt.Errorf("not linked — open the Strava auth URL printed at server startup")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve athlete: %w", err)

@@ -24,7 +24,7 @@ const (
 
 var (
 	ErrRateLimited  = errors.New("strava: rate limited")
-	ErrTokenRevoked = errors.New("strava: token revoked — re-run /login")
+	ErrTokenRevoked = errors.New("strava: token revoked — restart the bot and re-open the printed auth URL")
 )
 
 type Client struct {
