@@ -13,10 +13,16 @@ import (
 	"github.com/mariiatuzovska/vo2-bot/internal/store/queries"
 )
 
+type LatestActivity struct {
+	Name      string
+	SportType string
+	StartDate time.Time
+}
+
 type SyncResult struct {
 	Added  int
 	Total  int64
-	Latest *apiActivity
+	Latest *LatestActivity
 }
 
 // Sync pulls new Strava activities for the athlete linked to chatID.
@@ -24,7 +30,7 @@ type SyncResult struct {
 func (c *Client) Sync(ctx context.Context, chatID int64) (*SyncResult, error) {
 	athleteID, err := c.q.ResolveAthleteByChat(ctx, chatID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("not linked — run /login first")
+		return nil, fmt.Errorf("not linked — open the Strava auth URL printed at server startup")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve athlete: %w", err)
@@ -61,7 +67,7 @@ func (c *Client) Sync(ctx context.Context, chatID int64) (*SyncResult, error) {
 	var (
 		added      int
 		latestTime time.Time
-		latest     *apiActivity
+		latest     *LatestActivity
 	)
 	for page := 1; ; page++ {
 		acts, err := c.listPage(ctx, athleteID, after, page)
@@ -80,7 +86,11 @@ func (c *Client) Sync(ctx context.Context, chatID int64) (*SyncResult, error) {
 			added++
 			if a.StartDate.After(latestTime) {
 				latestTime = a.StartDate
-				latest = a
+				latest = &LatestActivity{
+					Name:      a.Name,
+					SportType: a.sportType(),
+					StartDate: a.StartDate,
+				}
 			}
 		}
 	}

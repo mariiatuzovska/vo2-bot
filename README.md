@@ -17,7 +17,7 @@ This repo is a work in progress.
 | Local infra | Terraform with `kreuzwerker/docker` provider           |
 | Dev loop    | Tilt                                                   |
 | Strava      | `net/http` — OAuth2 + activity sync (`internal/strava`) |
-| Telegram    | planned (`go-telegram-bot-api/telegram-bot-api/v5`)    |
+| Telegram    | `go-telegram-bot-api/telegram-bot-api/v5` — long-poll bot, allowlisted chats |
 | Claude      | planned (`anthropic-sdk-go`, model `claude-opus-4-7`)  |
 
 ## Repo layout
@@ -48,7 +48,10 @@ vo2-bot/
       sync.go                Sync() — advisory lock, pagination loop, cursor update
     httpx/                   shared HTTP helpers (Handle wrapper, WriteJSON)
     errs/                    typed HTTP errors (NewBadRequest, NewNotFound, …)
-    telegram/  claude/       package stubs
+    telegram/                long-poll bot, allowlist, command dispatch:
+      bot.go                 New(), Run() (long poll), dispatch(), allowlist
+      handlers.go            /start, /help, /strava, /apple handlers
+    claude/                  package stub
   build/Dockerfile           production image (not used in dev loop)
   infra/                     Terraform: Postgres container, network, volume
   Tiltfile                   orchestrates init → tf-up → postgres → bot
@@ -85,7 +88,11 @@ vo2-bot/
   see [Strava: DB schema](#strava-db-schema) below.
 - **Strava collector.** `internal/strava` implements the full OAuth2 flow
   and on-demand activity sync — see [Strava: internals](#strava-internals) below.
-- **Telegram / Claude:** package stubs only.
+- **Telegram bot.** `internal/telegram` runs a long-poll bot gated by an
+  allowlist of chat IDs. Commands: `/start` and `/help` print usage,
+  `/strava` triggers Strava sync for the calling chat, `/apple` triggers a
+  local Apple Health import. See [Telegram bot](#telegram-bot) below.
+- **Claude:** package stub.
 
 ## Apple Health: the local-first decision
 
@@ -137,9 +144,10 @@ so every operation is safe to retry.
 
 ### OAuth flow
 
-1. The Telegram `/login` command (not yet wired) calls `client.AuthURL(chatID)`,
-   which generates a Strava authorization URL with an HMAC-SHA256-signed state
-   parameter. The state encodes `chatID` and a 10-minute expiry:
+1. On bot startup, `cmd/bot/main.go` calls `client.AuthURL(chatID)` for the first
+   ID in `TELEGRAM_ALLOWED_CHAT_IDS` and logs the URL. The operator opens it once
+   from localhost to link their Strava account. The URL embeds an HMAC-SHA256-signed
+   state parameter encoding `chatID` and a 10-minute expiry:
    ```
    state = "{chatID}:{expiry_unix}" + "." + HMAC-SHA256(payload, clientSecret)
    ```
@@ -164,12 +172,12 @@ Before every Strava API call, `client.do()` checks token expiry with a 30-second
 buffer. If the token has expired, `refresh()` POSTs to `/oauth/token` with
 `grant_type=refresh_token`, persists the new token pair, and returns the fresh
 access token transparently to the caller. On `HTTP 400 invalid_grant`, the
-tokens row is deleted and `ErrTokenRevoked` is returned so the bot can prompt
-the user to `/login` again.
+tokens row is deleted and `ErrTokenRevoked` is returned so the operator can
+restart the bot and re-link via the printed Strava auth URL.
 
 ### Activity sync (`Sync`)
 
-`client.Sync(ctx, chatID)` is the implementation behind the future `/pull`
+`client.Sync(ctx, chatID)` is the implementation behind the `/strava`
 Telegram command:
 
 1. Resolves `strava_athlete_id` from `telegram_strava_links` via `chatID`.
@@ -193,9 +201,9 @@ Telegram command:
 
 `trackRateLimit()` is called after every `do()` response. It parses the
 `X-RateLimit-Limit` and `X-RateLimit-Usage` headers (format: `"15min,daily"`)
-and writes updated counters to `strava_rate_limit`. The handler for `/pull`
-can read this row before calling `Sync` and surface a user-friendly message
-("Strava rate limited — try again at HH:MM") instead of hitting a 429.
+and writes updated counters to `strava_rate_limit`. The handler for
+`/strava` can read this row before calling `Sync` and surface a user-friendly
+message ("Strava rate limited — try again at HH:MM") instead of hitting a 429.
 `ErrRateLimited` is also returned by `do()` on `HTTP 429` for synchronous
 handling.
 
@@ -203,11 +211,46 @@ handling.
 
 | Concern | How it's handled |
 | ------- | ---------------- |
-| Concurrent `/pull` for the same athlete | `pg_try_advisory_lock` — at most one winner per `athlete_id` across all pods |
-| Pod restart mid-sync | Advisory lock is session-level; it's automatically released when the connection closes, so the next `/pull` after a crash will succeed |
+| Concurrent `/strava` for the same athlete | `pg_try_advisory_lock` — at most one winner per `athlete_id` across all pods |
+| Pod restart mid-sync | Advisory lock is session-level; it's automatically released when the connection closes, so the next `/strava` after a crash will succeed |
 | Multiple pods, different athletes | Each athlete has an independent lock key; no global bottleneck |
 | Token storage | Tokens live in DB — any pod can refresh and serve any athlete |
 | All writes idempotent | `INSERT … ON CONFLICT … DO UPDATE` throughout — safe to retry |
+
+## Telegram bot
+
+`internal/telegram` runs a long-poll bot using
+`go-telegram-bot-api/telegram-bot-api/v5`. `cmd/bot/main.go` constructs the
+bot in `registerTelegram` and starts the poll loop in a goroutine; the
+process exits if `TELEGRAM_BOT_TOKEN` is missing.
+
+### Commands
+
+| Command       | Behaviour |
+| ------------- | --------- |
+| `/start`, `/help` | Prints usage. |
+| `/strava`     | Calls `strava.Client.Sync(chatID)` and replies with `Pulled N new activities (total: M)` plus the latest activity's sport and start date. |
+| `/apple`      | Calls `apple.Service.Import({Source: "local"})` (newest `HealthAutoExport_*.zip` in `APPLE_ARCHIVE_DIR`) and replies with workout/metric counts and the imported date range. |
+| anything else | Replies "Unknown command. Use /help to see available commands." |
+
+### Access control
+
+There is **no DB-backed user table**. Access is gated by the
+comma-separated `TELEGRAM_ALLOWED_CHAT_IDS` env var, parsed once at
+startup into an in-memory `map[int64]bool`. To check the current size,
+read the env var (e.g. `printenv TELEGRAM_ALLOWED_CHAT_IDS`) or look for
+the startup log line `telegram: allowed chat IDs: [...]`. If the var is
+empty, the bot logs `accepting all chats (dev mode)` and lets every chat
+through — only use this locally.
+
+### Strava linking
+
+`registerTelegram` takes the first ID from `TELEGRAM_ALLOWED_CHAT_IDS`
+and logs `strava: connect at <AuthURL>` on startup. The operator opens
+that URL once from localhost to link the chat to a Strava account; the
+HTTP callback at `STRAVA_REDIRECT_URL` finishes the OAuth handshake and
+seeds `telegram_strava_links`. After that, `/strava` works for the linked
+chat.
 
 ## Local run sequence
 
@@ -318,5 +361,8 @@ See `.env.example`. Currently-used keys:
   `STRAVA_CLIENT_SECRET` also serves as the HMAC key for signing OAuth state.
 - `STRAVA_REDIRECT_URL` — the callback URL registered in your Strava app
   (e.g. `http://localhost:8080/strava/callback`). Must match exactly.
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `ANTHROPIC_API_KEY`
-  — loaded but not yet consumed (Telegram and Claude packages are stubs).
+- `TELEGRAM_BOT_TOKEN` — required; the bot exits if unset.
+- `TELEGRAM_ALLOWED_CHAT_IDS` — comma-separated chat IDs allowed to
+  invoke commands. Empty = accept all chats (dev mode). The first ID also
+  receives the startup Strava OAuth URL.
+- `ANTHROPIC_API_KEY` — loaded but not yet consumed (Claude package is a stub).

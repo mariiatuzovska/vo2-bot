@@ -147,6 +147,9 @@ SELECT strava_athlete_id, access_token, refresh_token, expires_at, updated_at
 -- name: DeleteStravaTokens :exec
 DELETE FROM strava_tokens WHERE strava_athlete_id = $1;
 
+-- name: UnlinkAthleteFromAllChats :exec
+DELETE FROM telegram_strava_links WHERE strava_athlete_id = $1;
+
 -- name: LinkTelegramChat :exec
 INSERT INTO telegram_strava_links (telegram_chat_id, strava_athlete_id)
 VALUES ($1, $2)

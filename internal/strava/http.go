@@ -53,7 +53,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) error {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Linked ✓ (chat_id=%d) — head back to Telegram and run /pull", chatID)
+	fmt.Fprintf(w, "Linked ✓ (chat_id=%d) — head back to Telegram and run /strava", chatID)
 	return nil
 }
 
@@ -82,9 +82,8 @@ func (h *Handler) pull(w http.ResponseWriter, r *http.Request) error {
 	}
 	if result.Latest != nil {
 		resp["latest"] = map[string]any{
-			"id":         result.Latest.ID,
 			"name":       result.Latest.Name,
-			"sport_type": result.Latest.sportType(),
+			"sport_type": result.Latest.SportType,
 			"start_date": result.Latest.StartDate,
 		}
 	}

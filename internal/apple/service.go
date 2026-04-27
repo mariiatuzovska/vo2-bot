@@ -20,12 +20,18 @@ type ImportRequest struct {
 }
 
 type ImportResult struct {
-	Sha256        string     `json:"sha256"`
-	RangeStart    *time.Time `json:"range_start"`
-	RangeEnd      *time.Time `json:"range_end"`
-	WorkoutsAdded int        `json:"workouts_added"`
-	MetricsAdded  int        `json:"metrics_added"`
-	ImportedAt    time.Time  `json:"imported_at"`
+	Sha256        string         `json:"sha256"`
+	RangeStart    *time.Time     `json:"range_start"`
+	RangeEnd      *time.Time     `json:"range_end"`
+	WorkoutsAdded int            `json:"workouts_added"`
+	MetricsAdded  int            `json:"metrics_added"`
+	ImportedAt    time.Time      `json:"imported_at"`
+	Latest        *LatestWorkout `json:"latest,omitempty"`
+}
+
+type LatestWorkout struct {
+	Name      string    `json:"name"`
+	StartDate time.Time `json:"start_date"`
 }
 
 func (s *Service) Import(ctx context.Context, req ImportRequest) (*ImportResult, error) {
@@ -65,12 +71,16 @@ func (s *Service) Import(ctx context.Context, req ImportRequest) (*ImportResult,
 	}
 
 	typed := make([]typedWorkout, 0, len(parsed.workouts))
+	var latest *LatestWorkout
 	for i, raw := range parsed.workouts {
 		var w Workout
 		if err := json.Unmarshal(raw, &w); err != nil {
 			return nil, errs.NewUnprocessable("workout[%d]: %v", i, err)
 		}
 		typed = append(typed, typedWorkout{parsed: w, payload: raw})
+		if latest == nil || w.Start.Time.After(latest.StartDate) {
+			latest = &LatestWorkout{Name: w.Name, StartDate: w.Start.Time}
+		}
 	}
 
 	rec, err := s.Store.Persist(ctx, persistInput{
@@ -90,5 +100,6 @@ func (s *Service) Import(ctx context.Context, req ImportRequest) (*ImportResult,
 		WorkoutsAdded: rec.WorkoutsAdded,
 		MetricsAdded:  rec.MetricsAdded,
 		ImportedAt:    rec.ImportedAt,
+		Latest:        latest,
 	}, nil
 }

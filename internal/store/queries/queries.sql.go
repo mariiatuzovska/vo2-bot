@@ -445,6 +445,15 @@ func (q *Queries) ResolveAthleteByChat(ctx context.Context, telegramChatID int64
 	return strava_athlete_id, err
 }
 
+const unlinkAthleteFromAllChats = `-- name: UnlinkAthleteFromAllChats :exec
+DELETE FROM telegram_strava_links WHERE strava_athlete_id = $1
+`
+
+func (q *Queries) UnlinkAthleteFromAllChats(ctx context.Context, stravaAthleteID int64) error {
+	_, err := q.db.Exec(ctx, unlinkAthleteFromAllChats, stravaAthleteID)
+	return err
+}
+
 const unlinkTelegramChat = `-- name: UnlinkTelegramChat :exec
 DELETE FROM telegram_strava_links WHERE telegram_chat_id = $1
 `
