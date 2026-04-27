@@ -17,7 +17,10 @@ import (
 
 // coachSession holds a per-chat conversation. The system prompt embeds the
 // metrics block fetched once at /coach time; history grows across turns.
+// `loading` is true while the metrics block is still being built; follow-up
+// messages that arrive in that window are bounced with a "please wait" reply.
 type coachSession struct {
+	loading bool
 	system  string
 	history []claude.Message
 }

@@ -23,8 +23,8 @@ func (b *Bot) handleStart(msg *tgbotapi.Message) {
 	b.reply(msg, "👋 VO2 coaching bot\n\n"+
 		"/strava — sync latest Strava activities\n"+
 		"/apple  — import latest local Apple Health archive\n"+
-		"/coach <question> — start a coaching chat (loads recent metrics into context)\n"+
-		"   then send plain messages to continue the conversation\n"+
+		"/coach — start a coaching chat (loads recent metrics into context)\n"+
+		"   then send plain messages to talk with the coach\n"+
 		"/end — end the current coaching chat\n"+
 		"/help   — show this message")
 }
@@ -71,54 +71,50 @@ func (b *Bot) handleApple(ctx context.Context, msg *tgbotapi.Message) {
 }
 
 func (b *Bot) handleCoach(ctx context.Context, msg *tgbotapi.Message) {
-	question := strings.TrimSpace(msg.CommandArguments())
-	if question == "" {
-		b.reply(msg, "Usage: /coach <question>\nExample: /coach how does my last week look?")
-		return
-	}
-
 	athleteID, err := b.coach.ResolveAthlete(ctx, msg.Chat.ID)
 	if err != nil {
 		b.reply(msg, "No Strava account linked to this chat. Run /strava first.")
 		return
 	}
 
-	b.reply(msg, "Loading metrics & thinking…")
+	b.reply(msg, "Loading metrics…")
 
-	contextBlock, err := b.coach.Build(ctx, athleteID, 14)
-	if err != nil {
-		b.reply(msg, "Error building context: "+err.Error())
-		return
-	}
-
-	session := &coachSession{
-		system:  coachSystemPromptHeader + contextBlock,
-		history: []claude.Message{{Role: "user", Content: question}},
-	}
-
-	answer, err := b.claude.Chat(ctx, session.system, session.history)
-	if err != nil {
-		b.reply(msg, "Claude error: "+err.Error())
-		return
-	}
-	session.history = append(session.history, claude.Message{Role: "assistant", Content: answer})
-
+	session := &coachSession{loading: true}
 	b.mu.Lock()
 	b.sessions[msg.Chat.ID] = session
 	b.mu.Unlock()
 
-	for _, chunk := range splitForTelegram(answer, telegramMaxMessage) {
-		b.reply(msg, chunk)
+	contextBlock, err := b.coach.Build(ctx, athleteID, 14)
+	if err != nil {
+		b.mu.Lock()
+		delete(b.sessions, msg.Chat.ID)
+		b.mu.Unlock()
+		b.reply(msg, "Error building context: "+err.Error())
+		return
 	}
+
+	b.mu.Lock()
+	session.system = coachSystemPromptHeader + contextBlock
+	session.loading = false
+	b.mu.Unlock()
+
+	b.reply(msg, "Coach session started. Send a message to begin. /end to finish.")
 }
 
 func (b *Bot) handleCoachFollowup(ctx context.Context, msg *tgbotapi.Message) {
 	b.mu.Lock()
 	session, ok := b.sessions[msg.Chat.ID]
+	loading := ok && session.loading
 	b.mu.Unlock()
 	if !ok {
 		return
 	}
+	if loading {
+		b.reply(msg, "Still loading metrics — please wait a moment.")
+		return
+	}
+
+	b.reply(msg, "Thinking…")
 
 	session.history = append(session.history, claude.Message{Role: "user", Content: msg.Text})
 
@@ -145,7 +141,7 @@ func (b *Bot) handleEndCoach(msg *tgbotapi.Message) {
 		b.reply(msg, "No active coach session.")
 		return
 	}
-	b.reply(msg, "Coach session ended. Run /coach <question> to start a new one.")
+	b.reply(msg, "Coach session ended. Run /coach to start a new one.")
 }
 
 // splitForTelegram breaks long replies on paragraph/line boundaries so each
@@ -168,4 +164,3 @@ func splitForTelegram(s string, max int) []string {
 	}
 	return out
 }
-
