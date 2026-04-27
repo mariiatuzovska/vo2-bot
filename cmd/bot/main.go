@@ -14,6 +14,8 @@ import (
 
 	vo2bot "github.com/mariiatuzovska/vo2-bot"
 	"github.com/mariiatuzovska/vo2-bot/internal/apple"
+	"github.com/mariiatuzovska/vo2-bot/internal/claude"
+	"github.com/mariiatuzovska/vo2-bot/internal/coach"
 	"github.com/mariiatuzovska/vo2-bot/internal/config"
 	"github.com/mariiatuzovska/vo2-bot/internal/store"
 	"github.com/mariiatuzovska/vo2-bot/internal/strava"
@@ -40,7 +42,9 @@ func main() {
 	defer db.Close()
 
 	mux := http.NewServeMux()
-	registerTelegram(ctx, cfg, registerStrava(mux, cfg, db), registerApple(mux, cfg, db))
+	claudeClient := claude.New(cfg.AnthropicAPIKey, cfg.ClaudeModel)
+	coachBuilder := coach.NewBuilder(db.Pool)
+	registerTelegram(ctx, cfg, registerStrava(mux, cfg, db), registerApple(mux, cfg, db), claudeClient, coachBuilder)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -86,11 +90,11 @@ func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) *st
 	return client
 }
 
-func registerTelegram(ctx context.Context, cfg *config.Config, stravaClient *strava.Client, appleService *apple.Service) {
+func registerTelegram(ctx context.Context, cfg *config.Config, stravaClient *strava.Client, appleService *apple.Service, claudeClient *claude.Client, coachBuilder *coach.Builder) {
 	if cfg.TelegramBotToken == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN not set")
 	}
-	bot, err := telegram.New(cfg.TelegramBotToken, cfg.TelegramAllowedChatIDs, stravaClient, appleService)
+	bot, err := telegram.New(cfg.TelegramBotToken, cfg.TelegramAllowedChatIDs, stravaClient, appleService, claudeClient, coachBuilder)
 	if err != nil {
 		log.Fatalf("telegram: %v", err)
 	}

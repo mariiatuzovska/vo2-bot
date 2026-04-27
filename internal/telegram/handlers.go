@@ -3,16 +3,29 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/mariiatuzovska/vo2-bot/internal/apple"
+	"github.com/mariiatuzovska/vo2-bot/internal/claude"
 )
+
+const coachSystemPromptHeader = `You are an endurance-sports coaching assistant for a single athlete.
+You have been given a snapshot of the athlete's recent training data (Strava activities and, when available, Apple Health daily metrics: HRV, resting HR, sleep) below. Use it to ground your answers across the whole conversation.
+Be concise. Cite specific sessions by date when relevant. Flag overtraining, monotony, or recovery red flags if you see them. If data is insufficient to answer, say so.
+
+`
+
+const telegramMaxMessage = 4000
 
 func (b *Bot) handleStart(msg *tgbotapi.Message) {
 	b.reply(msg, "👋 VO2 coaching bot\n\n"+
 		"/strava — sync latest Strava activities\n"+
 		"/apple  — import latest local Apple Health archive\n"+
+		"/coach <question> — start a coaching chat (loads recent metrics into context)\n"+
+		"   then send plain messages to continue the conversation\n"+
+		"/end — end the current coaching chat\n"+
 		"/help   — show this message")
 }
 
@@ -56,3 +69,103 @@ func (b *Bot) handleApple(ctx context.Context, msg *tgbotapi.Message) {
 	}
 	b.reply(msg, text)
 }
+
+func (b *Bot) handleCoach(ctx context.Context, msg *tgbotapi.Message) {
+	question := strings.TrimSpace(msg.CommandArguments())
+	if question == "" {
+		b.reply(msg, "Usage: /coach <question>\nExample: /coach how does my last week look?")
+		return
+	}
+
+	athleteID, err := b.coach.ResolveAthlete(ctx, msg.Chat.ID)
+	if err != nil {
+		b.reply(msg, "No Strava account linked to this chat. Run /strava first.")
+		return
+	}
+
+	b.reply(msg, "Loading metrics & thinking…")
+
+	contextBlock, err := b.coach.Build(ctx, athleteID, 14)
+	if err != nil {
+		b.reply(msg, "Error building context: "+err.Error())
+		return
+	}
+
+	session := &coachSession{
+		system:  coachSystemPromptHeader + contextBlock,
+		history: []claude.Message{{Role: "user", Content: question}},
+	}
+
+	answer, err := b.claude.Chat(ctx, session.system, session.history)
+	if err != nil {
+		b.reply(msg, "Claude error: "+err.Error())
+		return
+	}
+	session.history = append(session.history, claude.Message{Role: "assistant", Content: answer})
+
+	b.mu.Lock()
+	b.sessions[msg.Chat.ID] = session
+	b.mu.Unlock()
+
+	for _, chunk := range splitForTelegram(answer, telegramMaxMessage) {
+		b.reply(msg, chunk)
+	}
+}
+
+func (b *Bot) handleCoachFollowup(ctx context.Context, msg *tgbotapi.Message) {
+	b.mu.Lock()
+	session, ok := b.sessions[msg.Chat.ID]
+	b.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	session.history = append(session.history, claude.Message{Role: "user", Content: msg.Text})
+
+	answer, err := b.claude.Chat(ctx, session.system, session.history)
+	if err != nil {
+		b.reply(msg, "Claude error: "+err.Error())
+		// roll back the unanswered user turn so the next attempt isn't malformed
+		session.history = session.history[:len(session.history)-1]
+		return
+	}
+	session.history = append(session.history, claude.Message{Role: "assistant", Content: answer})
+
+	for _, chunk := range splitForTelegram(answer, telegramMaxMessage) {
+		b.reply(msg, chunk)
+	}
+}
+
+func (b *Bot) handleEndCoach(msg *tgbotapi.Message) {
+	b.mu.Lock()
+	_, ok := b.sessions[msg.Chat.ID]
+	delete(b.sessions, msg.Chat.ID)
+	b.mu.Unlock()
+	if !ok {
+		b.reply(msg, "No active coach session.")
+		return
+	}
+	b.reply(msg, "Coach session ended. Run /coach <question> to start a new one.")
+}
+
+// splitForTelegram breaks long replies on paragraph/line boundaries so each
+// chunk stays under Telegram's 4096-char message limit.
+func splitForTelegram(s string, max int) []string {
+	if len(s) <= max {
+		return []string{s}
+	}
+	var out []string
+	for len(s) > max {
+		cut := strings.LastIndex(s[:max], "\n")
+		if cut <= 0 {
+			cut = max
+		}
+		out = append(out, s[:cut])
+		s = strings.TrimLeft(s[cut:], "\n")
+	}
+	if len(s) > 0 {
+		out = append(out, s)
+	}
+	return out
+}
+

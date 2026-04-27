@@ -56,5 +56,8 @@ func Load() (*Config, error) {
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
+	if cfg.AnthropicAPIKey == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required")
+	}
 	return cfg, nil
 }
