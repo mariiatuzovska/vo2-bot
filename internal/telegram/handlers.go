@@ -2,13 +2,17 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/mariiatuzovska/vo2-bot/internal/apple"
 	"github.com/mariiatuzovska/vo2-bot/internal/claude"
+	"github.com/mariiatuzovska/vo2-bot/internal/errs"
 )
 
 const coachSystemPromptHeader = `You are an endurance-sports coaching assistant for a single athlete.
@@ -52,6 +56,16 @@ func (b *Bot) handleApple(ctx context.Context, msg *tgbotapi.Message) {
 
 	result, err := b.apple.Import(ctx, apple.ImportRequest{Source: "local"})
 	if err != nil {
+		var apiErr *errs.Error
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+			text := "This archive was already imported"
+			if when, ok := apiErr.Extra["imported_at"].(time.Time); ok {
+				text += " on " + when.Format("2 Jan 2006 15:04")
+			}
+			text += " — nothing new to add. Export a fresh archive from Health Auto Export and try again."
+			b.reply(msg, text)
+			return
+		}
 		b.reply(msg, "Error: "+err.Error())
 		return
 	}
