@@ -2,6 +2,8 @@ package apple
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,15 +13,57 @@ import (
 	"github.com/mariiatuzovska/vo2-bot/internal/httpx"
 )
 
+const uploadMaxBytes = 50 << 20 // 50 MB
+
 type Handler struct {
-	Service *Service
+	Service      *Service
+	UploadSecret string       // required header value for POST /apple/upload
+	Notify       func(string) // called with a summary after a successful upload; may be nil
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /apple/import", httpx.Handle(h.imports))
+	mux.HandleFunc("POST /apple/upload", httpx.Handle(h.upload))
 	mux.HandleFunc("GET /apple/workouts", httpx.Handle(h.workouts))
 	mux.HandleFunc("GET /apple/metrics", httpx.Handle(h.metrics))
 	mux.HandleFunc("GET /apple/catalog", httpx.Handle(h.catalog))
+}
+
+func (h *Handler) upload(w http.ResponseWriter, r *http.Request) error {
+	if r.Header.Get("X-Apple-Secret") != h.UploadSecret || h.UploadSecret == "" {
+		return errs.NewUnauthorized("invalid or missing X-Apple-Secret")
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r.Body, uploadMaxBytes))
+	if err != nil {
+		return errs.NewBadRequest("read body: %s", err)
+	}
+
+	result, err := h.Service.ImportRaw(r.Context(), data)
+	if err != nil {
+		return err
+	}
+
+	if h.Notify != nil {
+		h.Notify(uploadSummary(result))
+	}
+
+	return httpx.WriteJSON(w, http.StatusAccepted, result)
+}
+
+func uploadSummary(r *ImportResult) string {
+	s := fmt.Sprintf("Apple Health upload: %d workouts, %d metrics.", r.WorkoutsAdded, r.MetricsAdded)
+	if r.RangeStart != nil && r.RangeEnd != nil {
+		s += fmt.Sprintf("\nRange: %s → %s",
+			r.RangeStart.Format("2 Jan 2006"),
+			r.RangeEnd.Format("2 Jan 2006"))
+	}
+	if r.Latest != nil {
+		s += fmt.Sprintf("\nLatest: %s — %s",
+			r.Latest.Name,
+			r.Latest.StartDate.Format("2 Jan 2006"))
+	}
+	return s
 }
 
 func (h *Handler) imports(w http.ResponseWriter, r *http.Request) error {

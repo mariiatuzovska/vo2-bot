@@ -9,6 +9,7 @@ import (
 	"github.com/mariiatuzovska/vo2-bot/internal/errs"
 )
 
+
 type Service struct {
 	Source Source
 	Store  *Store
@@ -62,6 +63,26 @@ func (s *Service) Import(ctx context.Context, req ImportRequest) (*ImportResult,
 		return nil, errs.NewUnprocessable("%s", err)
 	}
 
+	return s.ingest(ctx, req.Name, parsed)
+}
+
+// ImportRaw saves the raw zip bytes to the source, then imports them.
+// The archive is stored as HealthAutoExport_<timestamp>.zip.
+func (s *Service) ImportRaw(ctx context.Context, data []byte) (*ImportResult, error) {
+	parsed, err := extract(data)
+	if err != nil {
+		return nil, errs.NewUnprocessable("%s", err)
+	}
+
+	name := "HealthAutoExport_" + time.Now().UTC().Format("20060102150405") + ".zip"
+	if err := s.Source.Save(name, data); err != nil {
+		return nil, fmt.Errorf("save: %w", err)
+	}
+
+	return s.ingest(ctx, name, parsed)
+}
+
+func (s *Service) ingest(ctx context.Context, sourceFilename string, parsed *parsedArchive) (*ImportResult, error) {
 	if existing, err := s.Store.LookupImport(ctx, parsed.sha256); err != nil {
 		return nil, fmt.Errorf("lookup import: %w", err)
 	} else if existing != nil {
@@ -84,7 +105,7 @@ func (s *Service) Import(ctx context.Context, req ImportRequest) (*ImportResult,
 	}
 
 	rec, err := s.Store.Persist(ctx, persistInput{
-		sourceFilename: req.Name,
+		sourceFilename: sourceFilename,
 		sha256:         parsed.sha256,
 		workouts:       typed,
 		metrics:        parsed.metrics,

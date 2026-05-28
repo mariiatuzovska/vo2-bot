@@ -15,10 +15,12 @@ type fakeSource struct {
 	readErr   error
 	latest    string
 	latestErr error
+	saveErr   error
 }
 
-func (f *fakeSource) Read(string) ([]byte, error) { return f.data, f.readErr }
-func (f *fakeSource) Latest() (string, error)     { return f.latest, f.latestErr }
+func (f *fakeSource) Read(string) ([]byte, error)   { return f.data, f.readErr }
+func (f *fakeSource) Latest() (string, error)        { return f.latest, f.latestErr }
+func (f *fakeSource) Save(string, []byte) error      { return f.saveErr }
 
 func assertStatus(t *testing.T, err error, want int) {
 	t.Helper()
@@ -80,6 +82,19 @@ func TestImport_MissingJSONInZip_422(t *testing.T) {
 	zipBytes := makeArchive(t, map[string]string{"workout.gpx": "<gpx/>"})
 	svc := &Service{Source: &fakeSource{data: zipBytes}}
 	_, err := svc.Import(context.Background(), ImportRequest{Source: "local", Name: "x.zip"})
+	assertStatus(t, err, http.StatusUnprocessableEntity)
+}
+
+func TestImportRaw_InvalidZip_422(t *testing.T) {
+	svc := &Service{Source: &fakeSource{}}
+	_, err := svc.ImportRaw(context.Background(), []byte("not a zip"))
+	assertStatus(t, err, http.StatusUnprocessableEntity)
+}
+
+func TestImportRaw_MissingJSONInZip_422(t *testing.T) {
+	zipBytes := makeArchive(t, map[string]string{"workout.gpx": "<gpx/>"})
+	svc := &Service{Source: &fakeSource{}}
+	_, err := svc.ImportRaw(context.Background(), zipBytes)
 	assertStatus(t, err, http.StatusUnprocessableEntity)
 }
 

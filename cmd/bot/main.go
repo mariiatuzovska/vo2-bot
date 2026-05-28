@@ -44,7 +44,15 @@ func main() {
 	mux := http.NewServeMux()
 	claudeClient := claude.New(cfg.AnthropicAPIKey, cfg.ClaudeModel)
 	coachBuilder := coach.NewBuilder(db.Pool)
-	registerTelegram(ctx, cfg, registerStrava(mux, cfg, db), registerApple(mux, cfg, db), claudeClient, coachBuilder)
+	stravaClient := registerStrava(mux, cfg, db)
+	appleService := buildAppleService(cfg, db)
+	bot := buildTelegramBot(cfg, stravaClient, appleService, claudeClient, coachBuilder)
+	(&apple.Handler{
+		Service:      appleService,
+		UploadSecret: cfg.AppleUploadSecret,
+		Notify:       bot.Notify,
+	}).Register(mux)
+	go bot.Run(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -70,13 +78,11 @@ func main() {
 	}
 }
 
-func registerApple(mux *http.ServeMux, cfg *config.Config, db *store.Store) *apple.Service {
-	svc := &apple.Service{
+func buildAppleService(cfg *config.Config, db *store.Store) *apple.Service {
+	return &apple.Service{
 		Source: &apple.LocalSource{BaseDir: cfg.AppleArchiveDir},
 		Store:  apple.NewStore(db.Pool),
 	}
-	(&apple.Handler{Service: svc}).Register(mux)
-	return svc
 }
 
 func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) *strava.Client {
@@ -90,7 +96,7 @@ func registerStrava(mux *http.ServeMux, cfg *config.Config, db *store.Store) *st
 	return client
 }
 
-func registerTelegram(ctx context.Context, cfg *config.Config, stravaClient *strava.Client, appleService *apple.Service, claudeClient *claude.Client, coachBuilder *coach.Builder) {
+func buildTelegramBot(cfg *config.Config, stravaClient *strava.Client, appleService *apple.Service, claudeClient *claude.Client, coachBuilder *coach.Builder) *telegram.Bot {
 	if cfg.TelegramBotToken == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN not set")
 	}
@@ -103,7 +109,7 @@ func registerTelegram(ctx context.Context, cfg *config.Config, stravaClient *str
 	} else {
 		log.Println("strava: TELEGRAM_ALLOWED_CHAT_IDS empty — set it to print a Strava auth URL")
 	}
-	go bot.Run(ctx)
+	return bot
 }
 
 // primaryChatID returns the first chat ID parsed from a comma-separated list,

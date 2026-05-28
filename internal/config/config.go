@@ -18,6 +18,7 @@ type Config struct {
 	AnthropicAPIKey        string
 	ClaudeModel            string
 	AppleArchiveDir        string
+	AppleUploadSecret      string
 }
 
 func Load() (*Config, error) {
@@ -51,6 +52,7 @@ func Load() (*Config, error) {
 		AnthropicAPIKey:        v.GetString("ANTHROPIC_API_KEY"),
 		ClaudeModel:            v.GetString("CLAUDE_MODEL"),
 		AppleArchiveDir:        v.GetString("APPLE_ARCHIVE_DIR"),
+		AppleUploadSecret:      v.GetString("APPLE_UPLOAD_SECRET"),
 	}
 
 	if cfg.DatabaseURL == "" {
