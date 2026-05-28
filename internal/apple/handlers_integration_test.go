@@ -3,6 +3,7 @@
 package apple
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -166,6 +167,57 @@ func TestHandler_Catalog(t *testing.T) {
 	}
 	if len(wantMetrics) != 0 {
 		t.Errorf("missing metric names: %v (got %v)", wantMetrics, got.MetricNames)
+	}
+}
+
+func TestHandler_Upload_Happy(t *testing.T) {
+	h, _, _ := newHandler(t)
+	h.UploadSecret = "secret123"
+	var notified string
+	h.Notify = func(s string) { notified = s }
+
+	zipBytes := makeArchive(t, map[string]string{
+		"HealthAutoExport-2026-05.json": fixtureHAEJSON,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/apple/upload", bytes.NewReader(zipBytes))
+	req.Header.Set("X-Apple-Secret", "secret123")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	var got ImportResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.WorkoutsAdded != 2 || got.MetricsAdded != 3 {
+		t.Errorf("counts: workouts=%d metrics=%d", got.WorkoutsAdded, got.MetricsAdded)
+	}
+	if notified == "" {
+		t.Error("Notify not called")
+	}
+}
+
+func TestHandler_Upload_Duplicate_409(t *testing.T) {
+	h, _, _ := newHandler(t)
+	h.UploadSecret = "secret123"
+
+	zipBytes := makeArchive(t, map[string]string{
+		"HealthAutoExport-2026-05.json": fixtureHAEJSON,
+	})
+
+	req1 := httptest.NewRequest(http.MethodPost, "/apple/upload", bytes.NewReader(zipBytes))
+	req1.Header.Set("X-Apple-Secret", "secret123")
+	if rec := serve(h, req1); rec.Code != http.StatusAccepted {
+		t.Fatalf("first upload: status=%d body=%s", rec.Code, rec.Body)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/apple/upload", bytes.NewReader(zipBytes))
+	req2.Header.Set("X-Apple-Secret", "secret123")
+	rec := serve(h, req2)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate: expected 409, got %d body=%s", rec.Code, rec.Body)
 	}
 }
 

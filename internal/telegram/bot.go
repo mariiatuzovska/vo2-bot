@@ -26,14 +26,15 @@ type coachSession struct {
 }
 
 type Bot struct {
-	api      *tgbotapi.BotAPI
-	strava   *strava.Client
-	apple    *apple.Service
-	claude   *claude.Client
-	coach    *coach.Builder
-	allowed  map[int64]bool // empty = allow all (dev mode)
-	mu       sync.Mutex
-	sessions map[int64]*coachSession
+	api         *tgbotapi.BotAPI
+	strava      *strava.Client
+	apple       *apple.Service
+	claude      *claude.Client
+	coach       *coach.Builder
+	allowed     map[int64]bool // empty = allow all (dev mode)
+	primaryChat int64
+	mu          sync.Mutex
+	sessions    map[int64]*coachSession
 }
 
 func New(token string, allowedIDs string, stravaClient *strava.Client, appleService *apple.Service, claudeClient *claude.Client, coachBuilder *coach.Builder) (*Bot, error) {
@@ -55,14 +56,27 @@ func New(token string, allowedIDs string, stravaClient *strava.Client, appleServ
 	}
 
 	return &Bot{
-		api:      api,
-		strava:   stravaClient,
-		apple:    appleService,
-		claude:   claudeClient,
-		coach:    coachBuilder,
-		allowed:  allowed,
-		sessions: make(map[int64]*coachSession),
+		api:         api,
+		strava:      stravaClient,
+		apple:       appleService,
+		claude:      claudeClient,
+		coach:       coachBuilder,
+		allowed:     allowed,
+		primaryChat: parsePrimaryID(allowedIDs),
+		sessions:    make(map[int64]*coachSession),
 	}, nil
+}
+
+// Notify sends a plain-text message to the primary allowed chat.
+// It is a no-op when no allowed chat IDs are configured (dev mode).
+func (b *Bot) Notify(text string) {
+	if b.primaryChat == 0 {
+		return
+	}
+	msg := tgbotapi.NewMessage(b.primaryChat, text)
+	if _, err := b.api.Send(msg); err != nil {
+		log.Printf("telegram: notify error: %v", err)
+	}
 }
 
 // Run starts the long-poll loop and blocks until ctx is cancelled.
@@ -152,4 +166,17 @@ func parseAllowedIDs(raw string) map[int64]bool {
 		}
 	}
 	return m
+}
+
+func parsePrimaryID(raw string) int64 {
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if id, err := strconv.ParseInt(s, 10, 64); err == nil && id != 0 {
+			return id
+		}
+	}
+	return 0
 }

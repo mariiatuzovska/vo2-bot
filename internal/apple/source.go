@@ -17,6 +17,8 @@ type Source interface {
 	Read(name string) ([]byte, error)
 	// Latest returns the filename of the most recent HealthAutoExport archive.
 	Latest() (string, error)
+	// Save persists raw archive bytes under the given plain filename.
+	Save(name string, data []byte) error
 }
 
 type LocalSource struct {
@@ -62,6 +64,13 @@ func (s *LocalSource) Latest() (string, error) {
 		return "", errs.NewNotFound("no HealthAutoExport_*.zip in %s", s.BaseDir)
 	}
 	return latest, nil
+}
+
+func (s *LocalSource) Save(name string, data []byte) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.BaseDir, name), data, 0o600)
 }
 
 func validateName(name string) error {

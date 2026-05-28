@@ -1,8 +1,10 @@
 package apple
 
 import (
+	"bytes"
 	stderrors "errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -116,6 +118,43 @@ func TestParseLimit(t *testing.T) {
 		_, err := parseLimit("-1")
 		assertBadRequest(t, err)
 	})
+}
+
+func doUpload(h *Handler, req *http.Request) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	h.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestUpload_NoSecret_Unauthorized(t *testing.T) {
+	h := &Handler{Service: &Service{Source: &fakeSource{}}, UploadSecret: "secret123"}
+	req := httptest.NewRequest(http.MethodPost, "/apple/upload", bytes.NewReader([]byte("data")))
+	rec := doUpload(h, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestUpload_WrongSecret_Unauthorized(t *testing.T) {
+	h := &Handler{Service: &Service{Source: &fakeSource{}}, UploadSecret: "secret123"}
+	req := httptest.NewRequest(http.MethodPost, "/apple/upload", bytes.NewReader([]byte("data")))
+	req.Header.Set("X-Apple-Secret", "wrong")
+	rec := doUpload(h, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestUpload_InvalidZip_422(t *testing.T) {
+	h := &Handler{Service: &Service{Source: &fakeSource{}}, UploadSecret: "secret123"}
+	req := httptest.NewRequest(http.MethodPost, "/apple/upload", bytes.NewReader([]byte("not a zip")))
+	req.Header.Set("X-Apple-Secret", "secret123")
+	rec := doUpload(h, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body)
+	}
 }
 
 func assertBadRequest(t *testing.T, err error) {

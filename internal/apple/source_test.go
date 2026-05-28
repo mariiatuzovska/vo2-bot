@@ -96,3 +96,29 @@ func TestLocalSourceLatestEmpty(t *testing.T) {
 		t.Fatalf("expected 404, got %T %v", err, err)
 	}
 }
+
+func TestLocalSource_Save(t *testing.T) {
+	dir := t.TempDir()
+	src := &LocalSource{BaseDir: dir}
+	data := []byte("zip content")
+	name := "HealthAutoExport_20260527120000.zip"
+
+	if err := src.Save(name, data); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("got %q, want %q", got, data)
+	}
+}
+
+func TestLocalSource_Save_InvalidName(t *testing.T) {
+	src := &LocalSource{BaseDir: t.TempDir()}
+	if err := src.Save("../escape.zip", []byte("x")); err == nil {
+		t.Fatal("expected error for path traversal name")
+	}
+}
